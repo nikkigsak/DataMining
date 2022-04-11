@@ -1,0 +1,361 @@
+---
+title: "Data Mining Final Project"
+author: "Nikki Gerjarusak"
+date: "12/22/2021"
+output: pdf_document
+---
+Student IDs: shm2166 and sg4011
+
+I completed the final project in a group. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load dataset}
+library(dplyr)
+library(tidymodels)
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+
+heart <- readr::read_csv(dir(pattern = "heart.csv"), na = "N/A") %>%
+  mutate(row.names = NULL,
+         HeartDisease = factor(HeartDisease, labels = c("yes", "no"), levels = 1:0))
+
+```
+# The Data 
+This dataset contains 11 features that can be used to predict a possible heart 
+disease. It was created by gathering and combining different pre-existing 
+on heart disease to be able to increase the number of observations to a 
+sufficient level in which we can draw conclusions from. The data is retrieved 
+from the UCI Machine Learning Repository  and can be found  under the Index of 
+heart disease datasets. The basket of data includes the Cleveland OH, Hungarian, Switzerland, Long Beach VA, and Stalog data. All of the heart datasets are 
+combined over 11 common features. The total number of observations after 
+conglomeration is 918 after eliminating duplication. 
+
+The dataset itself is easy to work with and preprocesed sufficiently. We include
+the code to omit NAs as a safety measure to ensure the rest of the code chunks 
+run smoothly. We also factor our binary predicted variable Heart Disease to t
+ransform it into a categorical variable. 
+
+The dataset that we choose is used to predict a binary outcome, which is whether
+an individual has heart disease, or an individual does not have heart disease. 
+To predict whether an individual has heart disease, various other variables are 
+needed to analyse and help predict outcomes. We choose the following model based 
+on the fact that the outcome predictor is a binary variable. 
+
+```{r}
+heart <- na.omit(heart)
+set.seed(12345)
+heart_split <- initial_split(heart, prob = 0.80, strata = NULL)
+heart_train <- training(heart_split)
+heart_test  <- testing(heart_split)
+```
+
+The first method we use is a logistic regression (logit model). The reason behind this is that
+it measures the relationship. It is useful for when the outcome for a variable is 
+binary. 
+
+### Model 1. Logistic Regression
+```{r}
+## factor 
+logit_model <- logistic_reg() %>% 
+  set_engine("glm")
+
+logit_wf <- workflow() %>% 
+  add_model(logit_model) %>% 
+  add_formula(HeartDisease ~ .)
+
+logit_fit <- fit(logit_wf, data = heart_train)
+y_hat_logit <- predict(logit_fit, new_data = heart_test)
+
+bind_cols(heart_test, y_hat_logit) %>%
+  conf_mat(truth = HeartDisease, estimate = .pred_class)
+```
+```{r}
+bind_cols(HeartDisease = heart_test, 
+          predict(logit_fit, new_data = heart_test)) %>% 
+  accuracy(truth = HeartDisease, estimate = .pred_class)
+```
+
+A confusion matrix is a table that will categorize the predictions against the 
+actual values. It represents the predicted values and actual values.
+(TP): These are cases in which we predicted yes (they have the disease), 
+and they do have the disease.
+true negatives (TN): We predicted no, and they don't have the disease.
+false positives (FP): We predicted yes, but they don't actually have the disease. (Also known as a "Type I error.")
+false negatives (FN): We predicted no, but they actually do have the disease. 
+(Also known as a "Type II error.")
+
+According to the confusion matrix above, the true positive has 112, while false positives are 12. False negatives are 16, while true negatives are 85. 
+
+The second method we used is a penalised logistic regression using bootstrapping. 
+This is a resampling method. 
+
+### Model 2. Logistic Regression with Bootstrapping 
+```{r}
+if (.Platform$OS.type == "windows") {
+  doParallel::registerDoParallel(parallel::detectCores())
+} else doMC::registerDoMC(parallel::detectCores())
+```
+
+```{r}
+## with bootstrapping 
+glmnet_model <- logistic_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+
+heart_bs <- bootstraps(heart_train, times = 100)
+
+glmnet_recipe <- recipe(HeartDisease ~ Age + RestingBP + Cholesterol + MaxHR + Oldpeak, data = heart_train) %>% 
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+
+glmnet_wf <- workflow() %>% 
+  add_model(glmnet_model) %>% 
+  add_recipe(glmnet_recipe)
+
+glmnet_grid <- grid_regular(penalty(), mixture(), levels = 20)
+
+results <- tune_grid(glmnet_wf, resamples = heart_bs, 
+                     grid = glmnet_grid)
+
+most_accurate <- results %>% 
+  select_best("accuracy")
+
+fin_wf <- finalize_workflow(glmnet_wf, most_accurate)
+
+glmnet_fit <- fit(fin_wf, data = heart_train)
+
+bind_cols(heart_test, 
+          predict(glmnet_fit, new_data = heart_test)) %>% 
+  conf_mat(truth = HeartDisease, estimate = .pred_class)
+```
+
+According to the confusion matrix above, the true positive is 107, while false 
+positives are 41. False negatives are 21, while true negatives are 62.This matrix 
+is not as optimnal as the previous one, as the false positives and false negatives 
+are greater than in the previous model.
+
+```{r}
+bind_cols(heart_test, 
+          predict(logit_fit, new_data = heart_test)) %>% 
+  accuracy(truth = HeartDisease, estimate = .pred_class)
+```
+Penalised Logistic Regression with bootstrapping leads to 0.85 accuracy.
+
+```{r}
+library(pROC)
+library(caret)
+logit_ROC <- roc(heart_test$HeartDisease,
+                           predict(logit_fit, new_data = heart_test, type = "prob")$.pred_yes,
+                           levels = c("yes", "no"))
+plot(logit_ROC, las = 1)
+auc(logit_ROC) ## probability curve 
+## higher AUC better the model is at predicting the classes correctly 
+```
+Comparing the ROC curves from our logit versus penalized logit models, we can 
+see that our logit model has a higher AUC of 0.9258.  The penalized logic AUC 
+is 0.842. The logit model has a better score because we want a higher AUC. A 
+higher AUC indicates that the model is better at predicting the classes correctly.
+
+```{r}
+penalized_logit_ROC <- roc(heart_test$HeartDisease,
+                           predict(glmnet_fit, new_data = heart_test, type = "prob")$.pred_yes,
+                           levels = c("yes", "no"))
+plot(penalized_logit_ROC, las = 1)
+auc(penalized_logit_ROC) ## probability curve 
+```
+Comparing the ROC curves from our logit versus penalized logit models, we can 
+see that our logit model has a higher AUC of 0.9258.  
+The penalized logit AUC is 0.842. The logit model has a better score because we 
+want a higher AUC. A higher AUC indicates that the model is better at 
+predicting the classes correctly.
+
+```{r}
+cal <- bind_cols(chd = heart_test,
+                 glm = predict(logit_fit, new_data = heart_test, type = "prob")$.pred_yes,
+                 glmnet = predict(glmnet_fit, new_data = heart_test, type = "prob")$.pred_yes)
+cc <- caret::calibration(HeartDisease ~ glm  + glmnet, data = cal)
+plot(cc) # blue is for the penalized logit model
+```
+
+The calibration plot judges how well the models are calibrated. The observed 
+event percentages tells us predicted probability success of the observations. 
+Here, the pink line represents the logit model and the pink line represents the penalized logit model.
+
+### Model 3. Bagging
+```{r}
+library(baguette)
+bag_model <- 
+  bag_tree() %>% 
+  set_mode("classification") %>%
+  set_engine("rpart", times = 100) 
+
+bag_recipe <- recipe(HeartDisease ~ ., data = heart_train)
+
+bag_wf <- 
+  workflow() %>% 
+  add_model(bag_model) %>%
+  add_recipe(bag_recipe)
+
+bag_fit <- fit(bag_wf, heart_train)
+bind_cols(heart_test,
+          predict(bag_fit, new_data = heart_test)) %>%
+  conf_mat(truth = HeartDisease, estimate = .pred_class)
+```
+
+According to the confusion matrix above, the true positive is 115, and false 
+positives are 23. False negatives are 13, while true negatives are 79. This 
+model has the highest true positives which is always positive, as it means 
+the model is predicting accurately. 
+
+```{r}
+predict(bag_fit, new_data = heart_test, type = "prob") 
+```
+
+### Model 4. Random Forests
+```{r}
+library(randomForest)
+
+rf_model <- rand_forest() %>%
+  set_engine("randomForest",
+             num.threads = parallel::detectCores(), 
+             importance = TRUE, 
+             verbose = TRUE) %>% 
+  set_mode("classification") %>% 
+  set_args(trees = 1000)
+
+rf_recipe <- recipe(HeartDisease ~ ., data = heart_train)
+
+rf_wf <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(rf_recipe)
+
+rf_fit <- fit(rf_wf, heart_train)
+bind_cols(heart_test,
+          predict(rf_fit, new_data = heart_test)) %>%
+  conf_mat(truth = HeartDisease, estimate = .pred_class)
+                    
+```
+According to the confusion matrix above, the true positive is 116, while 
+false positives are 21. False negatives are 12, while true negatives are 81.
+
+```{r}
+predict(rf_fit, new_data = heart_test, type = "prob") 
+```
+
+```{r}
+## variable importance plot
+library(vip)
+extract_fit_parsnip(rf_fit) %>% vip
+## variable thats important for predicting outcome variable
+```
+According to the plot above, the most important variable is ST_Slope followed by ChestPain Type. This plot tells us the variables that impact the predictors in accordance to how important each variable is. 
+
+### 5. XGBoost Model
+```{r}
+boost_model <- 
+  boost_tree() %>% # could tune many things including learn_rate
+  set_engine("xgboost", nthreads = parallel::detectCores()) %>% 
+  set_mode("classification")
+
+boost_recipe <- recipe(HeartDisease ~ Age + RestingBP + Cholesterol + MaxHR + Oldpeak, data = heart_train)
+
+boost_wf <- 
+  workflow() %>% 
+  add_model(boost_model) %>%
+  add_recipe(boost_recipe) 
+
+boost_fit <- fit(boost_wf, data = heart_train)
+bind_cols(heart_test,
+          predict(boost_fit, new_data = heart_test)) %>%
+  conf_mat(truth = HeartDisease, estimate = .pred_class)
+
+predict(boost_fit, new_data = heart_test, type = "prob") 
+```
+According to the confusion matrix above, the true positive is 110, while 
+false positives are 35. False negatives are 18, while true negatives are 67
+
+```{r}
+## important variables
+extract_fit_parsnip(boost_fit) %>% vip
+```
+According to the graph above, the most important variable for predicting heart 
+ disease is oldpeak, followed by cholestrol.
+ 
+### Model 6. Neural Network
+```{r}
+library(tensorflow)
+library(keras)
+library(nnet)
+
+## with keras
+nn_recipe <- 
+  recipe(HeartDisease ~ Age + RestingBP + Cholesterol + MaxHR + Oldpeak, data = heart_train) %>% 
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  prep(training = heart_train, retain = TRUE)
+
+nn_model <- 
+  mlp(mode = "classification", hidden_units = 5, dropout = 0.25) %>%
+  set_engine("nnet") # or "nnet"
+
+nn_wf <- workflow() %>% 
+  add_recipe(nn_recipe) %>% 
+  add_model(nn_model)
+nn_wf_fit <- fit(nn_wf, data = heart_train)
+
+nn_fit <- fit(nn_wf, heart_train)
+
+nnet_wf_pred <- bind_cols(heart_test,
+                          predict(nn_wf_fit, new_data = heart_test))
+
+baked <- bake(nn_recipe, new_data = heart_test, all_predictors())
+nn_pred <- heart_test %>%
+  bind_cols(predict(nn_fit, new_data = baked))
+```
+
+```{r}
+nn_pred <- heart_test %>%
+  bind_cols(predict(nn_fit, new_data = baked),
+             predict(nn_fit, new_data = baked, type = "prob"))
+nn_pred
+```
+```{r}
+nnet_wf_pred %>% conf_mat(truth = HeartDisease, .pred_class)
+nnet_wf_pred %>% accuracy(truth = HeartDisease, .pred_class)
+```
+Nnet with workflow leads to 0.739 accuracy. According to the confusion matrix 
+above, the true positive is 103, while false positives are 35. False negatives 
+are 25, while true negatives are 67
+
+```{r}
+nn_pred %>% conf_mat(truth = HeartDisease, .pred_class)
+nn_pred %>% accuracy(truth = HeartDisease, .pred_class)
+```
+Nnet with workflow leads to 0.6521 accuracy. According to the confusion matrix 
+above, the true positive is 65, while false positives are 17. False negatives are
+63, while true negatives are 85. 
+
+
+Conclusion: 
+
+The metrics that we use to compare and contrast our models are the confusion matrix, prediction score, and auc curve. The higher the prediction score, typically the
+greater is the area under the curve. Moreover, the confusion matrix gives results
+in the form of true positives, false positives, false negatives and true negatives. 
+The higher the number of true positives and true negatives the model predicts the better its accuracy. On the other hand false positives and false negatives hinder the prediction process. Especially in the case of health, a false negative is extremely dangerous as it could make a sick individual think they are healthy, despite 
+having heart disease. The confusion matrix can be used to calculate over all accuracy: (TP+TN)/total 
+
+Model 1: 0.856 
+Model 2: 0.73
+Model 3: 0.84
+Model 4: 0.856
+Model 5: 0.756
+Model 6 (part 1) : 0.73
+Model 6 (part 2) : 0.65
+
+According to the confusion matrix the best prediction model is Logit and Random Forest. The logit accuracy score is the same as the random forests accuracy score. However, this is only see in the confusion matrix, as using prediction score and auc curve leads us to conclusion that logit is the best performing model.
+
+Therefore, we analyse the models based on the prediction score, auc curve, and confusion matrix
+

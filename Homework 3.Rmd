@@ -1,0 +1,178 @@
+---
+title: "Homework 3"
+author: "Nikki Gerjarusak"
+date: "11/22/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Text Analaysis
+```{r}
+## load data
+library(pdftools)
+library(dplyr)
+library(tidytext)
+library(tidyverse)
+Turley <- pdftools::pdf_data("https://tinyurl.com/4Turley", font_info = TRUE) 
+```
+
+### 1.1 Footnotes
+```{r}
+chop_footnote <- function(page){
+  page <- head(page, -1)
+  for(p in (nrow(page)-1):2){
+    if((page[p, 4] - page[p-1, 4]) > 25){
+      if(page[p, 3] != 90 ){
+        return(page)
+      }
+      page <- page[1:(p-1),]
+      return(page)
+      break
+    }
+    if(p == 2){
+      if(page[p, 4] > 100){
+        page <- data.frame()
+        return(page)
+      }
+      else{
+        return(page)
+      }
+    }
+  }
+}
+for (p in 1:length(Turley)) {
+  Turley_p <- Turley[[p]]
+  Turley[[p]] <- Turley_p
+}
+Turley <- bind_rows(Turley)
+```
+
+### 1.2 Encoding
+```{r}
+Turley <- mutate(Turley, text = iconv(text, from = "UTF-8", to = "ASCII", sub = "byte"))
+```
+
+### 1.3 Punctuation
+```{r}
+Turley <- mutate(Turley, text = str_replace_all(text, pattern = "[[:punct:] ]+", replacement = ""))
+```
+
+### 1.4 Sentiment
+```{r}
+get_sentiments("afinn")
+## merge data
+Turley <- inner_join(Turley, get_sentiments("afinn"), by = c("text" = "word"))
+```
+
+### 1.5 Other Witness
+```{r}
+Gerdhardt <- pdftools::pdf_data("https://tinyurl.com/2Gerhardt", font_info = TRUE) 
+Gerdhardt <- bind_rows(Gerdhardt)
+## enconding
+Gerdhardt <- mutate(Gerdhardt, text = iconv(text, from = "UTF-8", to = "ASCII", sub = "byte"))
+## drop punctuations
+Gerdhardt <- mutate(Gerdhardt, text = str_replace_all(text, 
+                                                      pattern = "[[:punct:] ]+", replacement = ""))
+## merge sentiments
+Gerdhardt <- inner_join(Gerdhardt, get_sentiments("afinn"), by = c("text" = "word"))
+
+## plot
+library(ggplot2)
+gg1 <- ggplot(Turley, aes(y, value)) +
+  geom_col(show.legend = FALSE) + ylab("Sentiment") + 
+  ggtitle("Turley")
+gg1
+
+gg2 <- ggplot(Gerdhardt, aes(y, value)) +
+  geom_col(show.legend = FALSE) + ylab("Sentiment") + 
+  ggtitle("Gerdhardt")
+gg2
+```
+Based on my analysis, I believe Turley was called by the Republicans and Gerdhardt was called by the Democrats as witnesses. 
+
+### 1.6 Assessment 
+#### Explain why sentiment analysis is or is not fruitful in this particular context of expert testimony before the Judiciary Committee of the U.S. House of Representatives.
+
+I don't think sentiment analysis is fruitful in this particular context of expert testimony because I don't think words that are associated with positive or negative sentiments are necessarily indicative of Republican or Democrat. Especially since these documents are presented before the Judiciary Committee of the US House of Representatives, I don't think sentiment analysis is a sufficient method of analyzing such a thorough and significant testimony. 
+
+### 1.7 Unsupervised vs. Supervised Learning
+#### Is the analysis in this problem primarily unsupervised learning or supervised learning. Why?
+
+The analysis in this problem is primarily unsupervised learning. This is because supervised learning sentiment analysis uses labeled input and output data while unsupervised learning does not. Unsupervised learning uses algorithms to analyze, cluster, and find hidden patterns in the data. The models are used for clustering, association, and dimensionality while supervised learning models are dealing with classification and regression problems.
+
+## 2 Linear Models
+```{r}
+ROOT <- "https://archive.ics.uci.edu/ml/machine-learning-databases/" 
+crime <- read.csv(paste0(ROOT, "communities/communities.data"), 
+                  header = FALSE, na.strings = "?")
+colnames(crime) <- read.table(paste0(ROOT, "communities/communities.names"),
+                              skip = 75, nrows = ncol(crime))[, 2] 
+rownames(crime) <- paste(crime$state, crime$communityname, sep = "_")
+```
+
+### 2.1 Training and Testing
+```{r}
+library(rsample)
+set.seed(12345)
+crime <- na.omit(crime)
+crime_split <- initial_split(crime, prob = 0.80, strata = NULL)
+crime_train <- training(crime_split)
+crime_test  <- testing(crime_split)
+```
+
+### 2.2 Ordinary Least Squares
+```{r}
+library(tidymodels)
+tidymodels_prefer()
+lm_model <- linear_reg() %>% 
+  set_engine("lm")
+lm_wf <-  workflow() %>% 
+  add_model(lm_model) %>% 
+  add_formula(ViolentCrimesPerPop~ .)
+## recipe
+crime_recipe <- recipe(ViolentCrimesPerPop ~ population + householdsize + numbUrban, data = crime_train) %>%
+  step_log(ViolentCrimesPerPop, skip = TRUE) %>% 
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  prep()
+tidy(crime_recipe)
+
+lm_wf <- workflow() %>%
+  add_model(lm_model) %>% 
+  add_recipe(crime_recipe)
+
+## solve optimization problem
+lm_fit <- fit(lm_wf, data = crime_train)
+## predict in testing data
+lm_pred <- predict(lm_fit, new_data = crime_test)
+## evaluate in the testing data
+rmse(lm_pred, truth = crime_test$ViolentCrimesPerPop, estimate = .pred)
+```
+The Root Mean Squared Error (RMSE) in the testing data is 1.583.
+
+### 2.3 Elastic Net
+```{r, warning=FALSE, message=FALSE}
+glmnet_model <- linear_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet")    
+
+glmnet_wf <-workflow() %>%
+  add_model(glmnet_model) %>%
+  add_recipe(crime_recipe) 
+
+## tuning code
+crime_bt <- bootstraps(crime_train, times = 50)
+glmnet_grid <- grid_regular(parameters(glmnet_model), levels = 10)
+results <- tune_grid(glmnet_wf, resamples = crime_bt, grid = glmnet_grid)
+lowest_rmse <- results %>%  select_best("rmse")
+final_wf <- finalize_workflow(glmnet_wf, lowest_rmse) 
+tuned_fit <- fit(final_wf, data = crime_train)   
+
+## predict in testing data
+glmnet_pred <- predict(tuned_fit, new_data = crime_test)
+
+## evaluate testing data
+rmse(glmnet_pred, truth = crime_test$ViolentCrimesPerPop, estimate = .pred)
+```
+The RMSE in the testing data using glmnet estimator is 1.538, which is relatively similar to the RMSE from the previous subproblem (1.583). 

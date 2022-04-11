@@ -1,0 +1,330 @@
+---
+title: "DM Final Exam"
+author: "Nikki Gerjarusak"
+date: "12/21/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(tidymodels)
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+library(additive)
+library(tensorflow)
+set.seed(1234)
+```
+
+## Question 1
+```{r, eval = TRUE}
+library(textrecipes)
+library(hardhat)
+
+FILE <- "kickstarter.csv.gz"
+if (!file.exists(FILE)) {
+  ROOT <- "https://github.com/EmilHvitfeldt/smltar/raw/master/data/"
+download.file(paste0(ROOT, FILE), destfile = FILE)}
+```
+
+```{r, eval = TRUE}
+kickstarter <- readr::read_csv(FILE) %>% 
+  filter(nchar(blurb) >= 15) %>%
+  slice_sample(n = 1000) %>% # to make faster / worse 
+  mutate(state = factor(state, labels = c("yes","no"), levels = 1:0))
+```
+
+### (A) (6 points) Run the code in appendix C, except
+• You already did the equivalent of C.1 above
+• Use bootstrapping rather than 10-fold cross-validation to tune the parameters 
+• You do not need to call set.seed again to match that in the book.
+• You also do not need to print out every intermediate object
+• You need to compute the classification accuracy in the testing data
+```{r, error=TRUE}
+kickstarter_split <- kickstarter %>%
+  filter(nchar(blurb) >= 15) %>% 
+  initial_split()
+
+kickstarter_train <- training(kickstarter_split)
+kickstarter_test <- testing(kickstarter_split)
+kickstarter_folds <- bootstraps(kickstarter_train)
+
+glmnet_model <- logistic_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+
+glmnet_recipe <- recipe(state ~ blurb, data = kickstarter_train) %>% 
+  step_tokenize(blurb) %>%
+  step_tokenfilter(blurb, max_tokens = 5e3) %>% 
+  step_tfidf(blurb) 
+
+lasso_spec <- logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_mode("classification") %>%
+  set_engine("glmnet")
+
+blue_print <- default_recipe_blueprint(composition = "dgCMatrix")
+
+glmnet_grid <- grid_regular(penalty(range = c(-5, 0)), mixture(), levels = 20)
+
+kickstarter_wf <- workflow() %>% 
+  add_model(glmnet_model) %>%
+  add_recipe(glmnet_recipe, blueprint = blue_print)
+
+results <- tune_grid(kickstarter_wf,
+                     kickstarter_folds, 
+                     grid = glmnet_grid)
+
+most_accurate <- results %>% 
+  select_best("accuracy")
+
+final_wf <- finalize_workflow(kickstarter_wf, most_accurate)
+
+glmnet_fit <- fit(final_wf, data = kickstarter_train)
+```
+
+```{r, error=TRUE}
+library(pROC)
+penalized_logit_ROC <- roc(results$chd,
+      predict(glmnet_fit, new_data = kickstarter_test, type = "prob")$.pred_yes,
+      levels = c("yes", "no"))
+plot(penalized_logit_ROC, las = 1)
+auc(penalized_logit_ROC)
+```
+
+### (B) (1 point) Run the following code, which is abridged from section 8.2.4. The authors split kickstarter_train further into an “analysis” dataset and an “assessment” dataset to use with more complicated neural network models elsewhere in the chapter. In essence, the optimization problem is solved for given neural network tuning parameters in the analysis dataset and then predictions are made into the assessment dataset in order to determine what the tuning parameters should be adjusted to. Since we are going to do a simpler neural network model below, the distinction between analysis and assessment datasets is not that important, but it using it makes it easier to follow the code from the book.
+```{r, error=TRUE}
+kick_val <- validation_split(kickstarter_train, strata = state)
+
+state_analysis <- analysis(kick_val$splits[[1]]) %>%
+  pull(state) %>%
+  as.factor
+
+state_assess <- assessment(kick_val$splits[[1]]) %>%
+  pull(state) %>%
+  as.factor
+```
+
+### (C) (6 points) Run a (simpler) “bag of words” (bow) neural network model like that in section 8.3, except use the nnet engine, rather than keras and use a quarter of the hidden units. You can start to do this by calling
+```{r, error=TRUE}
+nn_recipe <- recipe(state ~ blurb, data = kickstarter_train) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+
+bow_model <- 
+mlp(mode = "classification", hidden_units = 16, activation = "relu") %>%
+  set_engine("nnet", MaxNWts = 20000)
+
+nn_wf <- workflow() %>% 
+  add_recipe(nn_recipe) %>% 
+  add_model(bow_model)
+
+nn_fit <- fit(nn_wf, kickstarter_train)
+
+bind_cols(kickstarter_test,
+          predict(nn_fit, new_data = kickstarter_test)) %>%
+  rmse(truth = state, estimate = .pred)
+```
+
+### (D) (6 points) Which of the two previous models produces better calibrated predictions in the testing data? How do you know?
+
+### (E) (6 points) In section 8.4, the authors train a neural network model (with keras) but do not estimate the weights (coefficients) and biases (intercepts) relating the columns of X (through activation functions) to the hidden variables. Rather, they use the weights from the representation of each word in the vocabulary as a long vector (of size 50) that have been derived from other large collections of text, such as Wikipedia. The weights and biases relating the hidden variables to the log-odds of the Kickstarter campaign being successful are estimated.
+
+Suppose it is generally true that neural network models with predictors that are derived from text need to re-estimate the weights and biases relating the columns of X to the hidden variables in order to then predict / classify some outcome as a function of the hidden variables. Does that make such models less useful? For what purpose(s)? Why or why not?
+
+
+## Question 2
+```{r}
+LC <- readr::read_csv("https://tinyurl.com/LCcsv") %>% mutate(loan_status = case_when(loan_status == "Current" ~ 0, loan_status == "Fully Paid" ~ 0, TRUE ~ 1), loan_status = as.factor(loan_status))
+```
+
+### (A) (4 points) Several of the variables have some missing values. Justify your strategy for dealing with the
+missingness in the context of this classification problem.
+```{r}
+LC <- LC %>% filter(complete.cases(.[,-2]))
+## LC <- na.omit(LC)
+```
+I drop all NAs because in the classification problem, there cannot be any missing data points (NAs) in the predictor variables (in any of the rows).
+
+### (B) (7 points) Split the data into training and testing. Using the tidymodels framework, estimate a random
+forests model for loan_status.
+```{r, eval = TRUE}
+library(caret)
+library(randomForest)
+
+LC_split <- initial_split(LC, prob = 0.80, strata = NULL)
+LC_train <- training(LC_split)
+LC_test  <- testing(LC_split)
+
+rf_model <- rand_forest() %>%
+  set_engine("randomForest",
+             num.threads = parallel::detectCores(), 
+             importance = TRUE, 
+             verbose = TRUE) %>% 
+  set_mode("classification") %>% 
+  set_args(trees = 1000)
+
+base_recipe <- recipe(loan_status ~ emp_length + annual_income + debt_to_income + annual_income_joint +
+                        debt_to_income_joint + delinq_2y + months_since_last_delinq + earliest_credit_line +
+                        inquiries_last_12m + total_credit_lines + open_credit_lines + total_credit_limit +
+                        total_credit_utilized + num_collections_last_12m + num_historical_failed_to_pay + 
+                        months_since_90d_late + current_accounts_delinq + total_collection_amount_ever +
+                        current_installment_accounts + accounts_opened_24m + months_since_last_credit_inquiry + 
+                        num_satisfactory_accounts + num_accounts_120d_past_due + num_accounts_30d_past_due +
+                        num_active_debit_accounts + total_debit_limit + num_total_cc_accounts + num_open_cc_accounts +
+                        num_cc_carrying_balance + num_mort_accounts + account_never_delinq_percent +
+                        tax_liens + public_record_bankrupt + loan_amount + term + interest_rate + installment, data = LC_train) 
+
+rf_wf <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(base_recipe)
+
+rf_fit <- fit(rf_wf, LC_train)
+bind_cols(LC_test,
+          predict(rf_fit, new_data = LC_test)) %>%
+  conf_mat(truth = loan_status, estimate = .pred_class)
+```
+
+```{r, eval = TRUE}
+predict(rf_fit, new_data = LC_test, type = "prob") 
+```
+
+### (C) (7 points) Using the tidymodels framework, estimate a boosting model for loan_status, using the
+same predictors as in the previous problem.
+```{r, warning=FALSE, eval = TRUE}
+## library(xgboost)
+boost_model <- 
+  boost_tree() %>% # could tune many things including learn_rate
+  set_engine("xgboost", nthreads = parallel::detectCores()) %>% 
+  set_mode("classification")
+
+boost_wf <- 
+  workflow() %>% 
+  add_model(boost_model) %>%
+  add_recipe(base_recipe) 
+
+boost_fit <- fit(boost_wf, data = LC_train)
+bind_cols(LC_test,
+          predict(boost_fit, new_data = LC_test)) %>%
+  conf_mat(truth = loan_status, estimate = .pred_class)
+```
+
+```{r, eval = TRUE}
+predict(boost_fit, new_data = LC_test, type = "prob") 
+```
+
+### (D) (7 points) Which of the previous two models predicts best in the testing data, according to your prefered criterion and what is the justification for using that criterion in this context?
+```{r, eval = TRUE}
+library(vip)
+extract_fit_parsnip(rf_fit) %>% vip
+extract_fit_parsnip(boost_fit) %>% vip
+```
+I think that the Randomest Forest model predicts best in training data because it produces a confusion matrix with 49 true positives and 2 false positives while the XGBoost model predicts 48 true positives, 2 false positives and 1 false negative. Additionally, both models place importance on the variables annual_income, annual_income_joint, loan_amounts, and num_cc_carrying_balance. However, I believe the important variables of the Random Forest model are better predictors of loan status. 
+
+## Question 3
+```{r, eval = TRUE}
+sce <- readr::read_csv("sce.csv")
+```
+
+### (A) (6 points) Provide one reason why — and one reason why not — applying supervised learning techniques to inflation_rate in sce is likely to be useful for analyzing this theoretical model.
+
+Supervised learning is a type of machine learning that makes use of labeled data sets. These data sets are used to train or "supervise" algorithms so that they can accurately identify data or forecast outcomes. The goal of supervised learning is to predict Y (outcome variable) using labeled input data The model may test its accuracy and learn over time by using labeled inputs and outputs.However, applying supervised learning may over fit the training data which would produce inaccurate predictions and result in a poor model.
+
+### (B) (1 point) There is another question (Q8v2) in the SCE that simply asks “Over the next 12 months, do you think that there will be inflation or deflation?” Why would modeling this question with classification techniques be a worse idea than modeling inflation_rate with regression techniques?
+
+Q8v2 is a survey question asked to the respondent that will result in a subjective answer that is a binary categorical variable. I think it would be a worse idea than modeling inflation_rate using regression because the regression model would train and test using actual data points from observation of inflating rate rather than predicting off of a subjective survey question.
+
+### (C) (6 points) Split the data into training and testing and estimate a Generalized Additive Model (GAM) for inflation_rate with all of the predictors but using a spline for the effect of income_change. What is the root mean-squared error in the testing data?
+```{{r, eval = TRUE}
+sce_split <- initial_split(sce, prob = 0.8, strata = NULL)
+sce_train <- training(sce_split)
+sce_test <- testing(sce_split)
+
+library(additive)
+
+GAM <-additive() %>%
+  set_engine("mgcv") %>%
+  set_mode("regression")
+
+GAM_recipe <- recipe(inflation_rate ~., data = sce_train)
+
+GAM_wf <- workflow() %>%
+  add_model(GAM, formula = inflation_rate ~ s(income_change)) %>%
+  add_recipe(GAM_recipe)
+  
+GAM_fit <- fit(GAM_wf, data = sce_train)
+
+bind_cols(sce_test,
+          predict(GAM_fit, new_data = sce_test)) %>%
+  rmse(truth = inflation_rate, estimate = .pred)
+```
+RMSE is 37.90
+
+### (D) (6 points) Create a plot that has income_change on the horizontal axis and the estimated spline function on the vertical axis. Do you think the function that it found provides support or is inconsistent with the model underlying the expectations-augmented short-run Philips curve?
+```{r, error=TRUE}
+gg <- ggplot(sce)
+gg1 <- gg + geom_point(mapping = aes(x = income_change, y = s(income_change)))
+gg1
+```
+
+(E) (6 points) Suppose you wanted to use your model to predict inflation expectations in the population as a whole, using the American Community Survey (ACS) data. This dataset has many variables but lacks income_change. How would you go about predicting inflation_rate in the ACS in light of this?
+
+Without income_change, I would utilize other predictors of inflation such as as GDP growth, employment, housing price, wages,and consumer price index. 
+
+## Question 4
+```{r, eval = TRUE}
+unzip(dir(".", pattern = "^df")) 
+Global <- readr::read_csv(file.path("data", "download_data", "Global_data.csv")) %>% 
+  select(-...1)
+codebook <- readr::read_csv(file.path("data", "download_data", "Global_codebook.csv")) %>% 
+  select(-...1)
+```
+### (A) (4 points) Load the countrycode package, which you may have to install (once, outside your .Rmd file) from CRAN. It contains a data.frame called codelist that can be used to map between various coding systems that are used for countries. You only need two of its (many) variables, region and wb, which are respectively the region and country codes used by the World Bank. Merge these into the Global data.frame (where the id variable corresponds to the World Bank country code). Due to some mistake, Kosovo (whose id is RKS) will not match but its region is “Europe & Central Asia”, which you should fix.
+
+```{r, eval = TRUE}
+data("codelist", package = "countrycode")
+count_code <- select(codelist, wb, region)
+count_code <- rename(count_code, id = wb)
+combined <- left_join(Global, count_code, by = 'id')
+```
+
+### (B) (7 points) Split the data into training and testing, stratifying by region. Estimate a regression model using Multivariate Adaptive Regression Splines (MARS).
+```{r, eval = TRUE}
+Global_split <- initial_split(combined, prob = 0.8, strata = region)
+Global_train <- training(Global_split)
+Global_test <- testing(Global_split)
+```
+
+### (C) (7 points) The nearest_neighbor function in the recipes package can be used to specify a K nearest neighbor regression model. The K argument is called neighbors and can be set to tune() in order to tune it over a one-dimensional grid of small integer values. Do so, in order to choose the best such model on the root mean-squared error criterion.
+```{r, error=TRUE}
+mars_recipe <- recipe(deaths_per_mio_log ~ ., data = Global_train) %>%
+  step_impute_knn(all_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_nzv(all_predictors()) %>%
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+
+mars_model <- mars(num_terms = tune()) %>% 
+  set_engine("earth") %>% 
+  set_mode("regression")
+
+mars_results <- bootstraps(Global_train, times = 5)
+mars_grid <- grid_regular(num_terms(range = c(1, 50)))
+
+mars_wf <- 
+  workflow() %>% 
+  add_model(mars_model) %>% 
+  add_recipe(mars_recipe)
+
+mars_wf <- finalize_workflow(mars_wf, select_best(mars_results, "rmse"))
+
+mars_fit <- fit(mars_wf, Global_train)
+
+predict(mars_fit, new_data = Global_test) %>%
+  bind_cols(Global_test) %>%
+  rmse(truth = deaths_per_mio_log, estimate = .pred)
+```
+

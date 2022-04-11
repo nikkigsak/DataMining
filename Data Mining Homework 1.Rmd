@@ -1,0 +1,139 @@
+---
+title: "Data Mining Homework 1"
+author: "Nikki Gerjarusak"
+date: "10/4/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+tinytex::install_tinytex()
+```
+
+#1 Data Structures 
+In what ways does a data.frame differ from a list in R? Use R code to create one of each.
+
+A `list` is a container of containers and elements of the list do not have to be the same type. For example, a list can contain a vector, a factor, a matrix, and an array all in one. A `data.frame` is a special type of list which contains elements of all the same length. However, the "columns" in a data frame do not have to be the same type.
+
+```{r list}
+#vector
+logic <- c(TRUE, FALSE)
+#matrix
+mat <- matrix(1 : 12, nrow = 4, ncol = 3)
+#array
+arr <- array(1 : 30, dim = c(3,2,4))
+#factor
+hair <- factor(c(1,1,1,2,3,2,1,3,4,2), levels = 1 : 4, labels = c("Blonde","Brown","Black","Other"))
+#list
+lst <- list(logic, mat, arr, hair)
+print(lst)
+```
+```{r data frame}
+number <- c(11, 20)
+char <- c("Home","Work")
+df <- data.frame(number, char, logic)
+df
+```
+#2 Style
+Hadley Wickham’s tidyverse style guide
+```{r tidyverse}
+first <- c(5, -2, 3, -4, 1, NA) 
+second <- first * -1 
+second[second > 0]
+
+num = 1
+my_condition <- round(runif(1, 0, 1)) 
+  if (my_condition) {
+  num <- num + 1
+  print(paste("num =", num, sep=" ")) 
+  } else {
+  print("false")
+  }
+
+# make an integer sequence from 1 to 50
+int <- 1:50
+
+# test if an number is even
+even <- int%%2 == 0
+
+# subset by the test above
+int_even = int[even]
+
+x <- matrix(c(23, 34, 35, 6, 87, 39, 21, 14, 99), nrow = 3) 
+test_percentage <- as.data.frame(x)
+names(test_percentage) <- c("reading_score",
+                            "math_score",
+                            "writing_score")
+avg <- function(x) {
+  sum(x)/length(x)
+}
+```
+
+#3 American National Election Study
+```{r}
+data(turnout, package = "qss")
+
+#check dimensions
+dim(turnout)
+#obtain summary 
+summary(turnout)
+range(turnout$year)
+```
+In the data frame the dimensions are 14 x 9. There are 14 observations of 9 variables. The years covered in the data frame ranges from 1980 to 2008.
+```{r}
+# subset the data into two periods
+first_half <- turnout[1:7,]
+second_half <- turnout[8:14,]
+first_half
+second_half
+# Calculate the difference between the VEP turnout rate and the ANES turnout rate separately for each year within each period
+turnout[is.na(turnout)] = 0
+turnout.rate <- function(a,b,c,d) {
+  results = (a + b) / (c + d)
+  return(results*100)
+}
+VEP.turnout.rate <- turnout.rate(turnout$total, turnout$osvoters,
+                                 turnout$VEP, turnout$overseas)
+first_half$ANES[1:7] - VEP.turnout.rate[1:7]
+second_half$ANES[1:7] - VEP.turnout.rate[8:14]
+```
+```{r}
+# Has the bias of ANES increased over time?
+mean(first_half$ANES[1:7] - VEP.turnout.rate[1:7])
+mean(second_half$ANES[1:7] - VEP.turnout.rate[8:14])
+```
+The results show the bias of ANES has increased since the difference between the VEP turnout rate and the ANES turnout rate has increased over the two time periods on average. 
+
+#4 Split, Apply, Combine
+```{r}
+data(social, package = "qss") # load data
+library(dplyr)
+
+summary(social)
+
+# turnout for each group
+social_group <- group_by(social, messages)
+summarize(social_group, avg = mean(primary2006))
+
+# turnout for control group
+filter(social, messages == "Control") %>%
+  group_by(messages) %>%
+  summarize(avg = mean(primary2006))
+
+# subtract control group turnout from each group
+control_avg <- social %>%
+  filter(messages == "Control") %>%
+  summarize(avg = mean(primary2006))
+
+social %>%
+  group_by(messages) %>%
+  summarize(mean_all = mean(primary2006)) %>%
+  mutate(subtract = mean_all - control_avg$avg)
+
+social_group$age <- 2006 - social$yearofbirth # create age variable
+summarize(social_group, avg = mean(age))
+
+summarize(social_group, avg = mean(primary2004))
+
+summarize(social_group, avg = mean(hhsize))
+```

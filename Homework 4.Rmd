@@ -1,0 +1,234 @@
+---
+title: "Homework 4"
+author: "Nikki Gerjarusak"
+date: "12/6/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load data}
+library(readr)
+HPS_train <- read_csv("pulse2021_puf_38.csv")
+HPS_test <- read_csv("pulse2021_puf_39.csv")
+```
+
+# 1. Classification
+```{r, warning=FALSE, error=FALSE, message=FALSE}
+library(tidymodels)
+library(dplyr)
+
+HPS_test <-
+filter(HPS_test, TENURE == 3, RENTCUR > 0, WRKLOSSRV > 0) %>% 
+  mutate(RENTCUR = factor(RENTCUR, levels = 1:2, labels = c("Yes", "No"))) %>%
+  mutate(WRKLOSSRV = factor(WRKLOSSRV, levels = 1:2, labels = c("Yes", "No"))) 
+
+HPS_train <- filter(HPS_train, TENURE == 3, RENTCUR > 0, WRKLOSSRV > 0) %>% 
+  mutate(RENTCUR = factor(RENTCUR, levels = 1:2, labels = c("Yes", "No"))) %>%
+  mutate(WRKLOSSRV = factor(WRKLOSSRV, levels = 1:2, labels = c("Yes", "No")))
+
+is.na(HPS_test$RENTCUR)
+is.na(HPS_train$RENTCUR)
+```
+## 1.1 Download and Preprocess Data
+```{r, warning=FALSE}
+## discretize age variable 
+HPS_train <- mutate(HPS_train, TBIRTH_YEAR) %>% 
+  mutate(AGE = 2021 - TBIRTH_YEAR )
+head(HPS_train)
+
+HPS_test <- mutate(HPS_test, TBIRTH_YEAR) %>% 
+  mutate(AGE = 2021 - TBIRTH_YEAR )
+head(HPS_test)
+
+## choosing 6 breakpoints 
+break_1 <- HPS_train %>% 
+  step_discretize(HPS_train$AGE, num_breaks = 6, 
+                  labels = c("20+", "30+", "40+", "50+", "60+", "70+"))
+
+break_2 <- HPS_test %>% 
+  step_discretize(HPS_test$AGE, num_breaks = 6,
+                  labels = c("20+", "30+", "40+", "50+", "60+", "70+"))
+```
+
+## 1.2 Impute missing HPS values
+```{r}
+recipe_1 <- recipe(RENTCUR ~ ., data = HPS_train)
+impute_recipe_1 <- recipe_1 %>%
+  step_impute_mean(RENTCUR)
+
+recipe_2 <- recipe(RENTCUR ~ ., data = HPS_test)
+impute_recipe_2 <- recipe_2 %>%
+  step_impute_mean(RENTCUR)
+
+recipe_3 <- recipe(WRKLOSSRV ~ ., data = HPS_train)
+impute_recipe_3 <- recipe_3 %>%
+  step_impute_mean(WRKLOSSRV)
+
+recipe_4 <- recipe(WRKLOSSRV ~ ., data = HPS_test)
+impute_recipe_4 <- recipe_4 %>%
+  step_impute_mean(WRKLOSSRV)
+
+recipe_5 <- recipe(RHISPANIC ~ ., data = HPS_train)
+impute_recipe_5 <- recipe_5 %>%
+  step_impute_mean(RHISPANIC)
+
+recipe_6 <- recipe(RHISPANIC ~ ., data = HPS_test)
+impute_recipe_6 <- recipe_6 %>%
+  step_impute_mean(RHISPANIC)
+
+recipe_7 <- recipe(RRACE ~ ., data = HPS_train)
+impute_recipe_7 <- recipe_7 %>%
+  step_impute_mean(RRACE)
+
+recipe_8 <- recipe(RRACE ~ ., data = HPS_test)
+impute_recipe_8 <- recipe_8 %>%
+  step_impute_mean(RRACE)
+
+recipe_9 <- recipe(EEDUC ~ ., data = HPS_train)
+impute_recipe_9 <- recipe_9 %>%
+  step_impute_mean(EEDUC)
+
+recipe_10 <- recipe(EEDUC ~ ., data = HPS_test)
+impute_recipe_10 <- recipe_10 %>%
+  step_impute_mean(EEDUC)
+
+recipe_11 <- recipe(MS ~ ., data = HPS_train)
+impute_recipe_11 <- recipe_11 %>%
+  step_impute_mean(MS)
+
+recipe_12 <- recipe(MS ~ ., data = HPS_test)
+impute_recipe_12 <- recipe_12 %>%
+  step_impute_mean(MS)
+
+recipe_13 <- recipe(EGENID_BIRTH ~ ., data = HPS_train)
+impute_recipe_13 <- recipe_13 %>%
+  step_impute_mean(EGENID_BIRTH)
+
+recipe_14 <- recipe(EGENID_BIRTH ~ ., data = HPS_test)
+impute_recipe_14 <- recipe_14 %>%
+  step_impute_mean(EGENID_BIRTH)
+
+recipe_15 <- recipe(GENID_DESCRIBE ~ ., data = HPS_train)
+impute_recipe_15 <- recipe_15 %>%
+  step_impute_mean(GENID_DESCRIBE)
+
+recipe_16 <- recipe(GENID_DESCRIBE ~ ., data = HPS_test)
+impute_recipe_16 <- recipe_16 %>%
+  step_impute_mean(GENID_DESCRIBE)
+
+```
+
+## 1.3 Fit primary regression: rental arrears
+```{r, error=FALSE, warning=FALSE}
+set.seed(1234)
+
+is.na(HPS_test$WRKLOSSRV)
+is.na(HPS_train$WRKLOSSRV)
+
+glmnet_model <- logistic_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet")
+
+HPS_boot <- bootstraps(HPS_test, times = 5)
+
+glmnet_recipe <- 
+  recipe(WRKLOSSRV ~ RHISPANIC + RRACE + EEDUC + MS + EGENID_BIRTH 
+  + GENID_DESCRIBE, data = HPS_test) %>% 
+  step_center(all_numeric_predictors()) %>% 
+  step_scale(all_numeric_predictors())
+
+glmnet_wf <- workflow() %>% 
+  add_model(glmnet_model) %>% 
+  add_recipe(glmnet_recipe)
+  
+glmnet_grid <- grid_regular(penalty(), mixture(), levels = 20)
+
+results <- tune_grid(glmnet_wf, resamples = HPS_boot, 
+                     grid = glmnet_grid)
+
+most_accurate <- results %>% 
+  select_best("accuracy")
+
+fin_wf <- finalize_workflow(glmnet_wf, most_accurate)
+
+glmnet_fit <- fit(fin_wf, data = HPS_train)
+
+bind_cols(HPS_test, 
+          predict(glmnet_fit, new_data = HPS_test)) %>% 
+  conf_mat(truth = WRKLOSSRV, estimate = .pred_class)
+```
+
+## 1.4 Fit supporting regression: household unemployment
+```{r}
+library(randomForest)
+ACS2019 <- readRDS("ACS2019.rds")
+colnames(ACS2019) <- colnames(HPS_test)[3:20]
+train_2 <- HPS_train[c(colnames(ACS2019), 'WRKLOSSRV')]
+
+rf_model <- rand_forest() %>%
+  set_engine("randomForest",
+             num.threads = parallel::detectCores(), 
+             importance = TRUE, 
+             verbose = TRUE) %>% 
+  set_mode("classification") %>% 
+  set_args(trees = 500)
+
+base_recipe <- recipe(WRKLOSSRV ~ RHISPANIC + RRACE + EEDUC + MS + EGENID_BIRTH 
+  + GENID_DESCRIBE, data = HPS_train)
+
+rf_wf <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(base_recipe)
+
+rf_fit <- fit(rf_wf, HPS_train)
+bind_cols(HPS_test,
+          predict(rf_fit, new_data = HPS_test)) %>%
+  conf_mat(truth = WRKLOSSRV, estimate = .pred_class)
+                       
+
+predict(rf_fit, new_data = ACS2019, type = "prob") 
+```
+
+## 1.5 Build ACS dataset for estimation 
+```{r, eval=FALSE}
+ACS2019 %>%
+  
+```
+
+# 2. Regression
+```{r}
+## load data
+data(College, package = "ISLR2")
+
+library(tidymodels)
+set.seed(20211207) # use this seed
+College_split <- initial_split(College, prob = 0.8) 
+College_train <- training(College_split) 
+College_test <- testing(College_split)
+
+col_recipe <- 
+  recipe(Outstate ~ ., data = College_train) %>%
+  step_log(Outstate, skip = TRUE) %>% 
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  prep()
+tidy(col_recipe)
+
+glmnet_model <-
+  linear_reg(penalty = 0.01, mixture = 0.5) %>% 
+  set_engine("glmnet")
+
+glmnet_workflow <-
+  workflow() %>%
+  add_model(glmnet_model) %>%
+  add_recipe(col_recipe)
+
+glmnet_fit <- fit(glmnet_workflow, data = College_train)
+
+y_hat <- predict(glmnet_fit, new_data = College_test) %>% exp
+
+rmse(y_hat, truth = College_test$Outstate, estimate = .pred)
+```
+

@@ -1,0 +1,201 @@
+---
+title: "Data Mining Homework 2"
+author: "Nikki Gerjarusak"
+date: "10/18/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 1 Special Matrices 
+## Answer question 2 on page 301 of Moore and Siegel
+2. Identify the follow matrices as diagonal, identity, square, symmetric, 
+triangular, or none of the above (note all that apply).
+
+a) square, symmetric 
+b) diagonal, identity, square, symmetric, triangular
+c) square
+d) none of the above
+
+# 2 QR Decomposition
+b = $(X'X)^-1 X'y$ 
+X = QR
+b = $((QR)'QR)^-1 (QR)'y$
+b = $(Q'R'QR)^-1 (Q'R'y)$
+b = $(Q'-^1 R'-^1 Q-^1 R-^1 Q' R'y)$
+b = $(Q'-^1 Q-^1 R-^1 Q'Iy)$
+$(Q'-^1 Q'= I)$
+$(R')^-1 R' = I$
+b = $(IQ^-1Q'TIy)$
+b = $(R^-1Q'y)$  
+
+# 3 Ideal Points
+```{r set up}
+Senate <- readr::read_csv(dir(pattern = "csv$"), na = "N/A")
+library(tidyverse)
+```
+
+```{r}
+## recode cast_code in Senate df
+Senate <- Senate %>% 
+  mutate(vote = recode_factor(cast_code, '1' = '1', '2' = '1',
+                               '3' = '1', '4' = '0', '5' = '0',
+                               '6' = '0', '0' = 'N/A', '7' = 'N/A',
+                               '8' = 'N/A', '9' = 'N/A'))
+## filter out NA values
+Senate <- filter(Senate, vote != 'N/A')
+
+## create a new data.frame
+Senate_wide <- tidyr::pivot_wider(Senate, id_cols = "icpsr",
+names_from = "rollnumber", values_from = "vote")
+
+## create a square matrix
+d <- select(Senate_wide, -icpsr) %>% dist(method = "euclidean") %>% as.matrix
+
+## replace any NA values in d with zeros
+d[is.na(d)] <- 0
+
+## Classical MDS algorithm (with m = 2)
+## set up squared proximity matrix
+d2 <- d * d
+dimensions <- dim(d)
+n <- dimensions[1]
+j <- matrix(data=1, nrow = n, ncol= n)
+i <- diag(nrow = n, ncol = n)
+c <- i - (j/n)
+## apply double centering
+b <- (-1/2)*c*d2
+## eigen value
+eg <- eigen(b, symmetric = TRUE)
+m <- 2
+e <- eg$vectors[,1:m]
+Lambda <- diag(sqrt(eg$values[1:m]))
+x <- e %*% Lambda 
+rownames(x) <- Senate_wide$icpsr
+
+## find two most extreme Senators
+members <- readr::read_csv("https://voteview.com/static/data/out/members/HSall_members.csv")
+## get min and max values
+min(x)    
+max(x)
+## find min and max index
+which (x == min(x))  # 100   
+which (x == max(x))   # 195
+Senate_wide$icpsr[100] # 99912
+Senate_wide$icpsr[195] # NA?
+## Senator name
+filter(members, icpsr == 99912) %>%
+  select(bioname) # Donald Trump 
+```
+THe x value retrieved from using the Classical MDS Algorithm only provided me with one Senator that represented the extreme, which was Donald Trump (haha).
+
+```{r}
+## smallest values of dimensions
+sm1 <- tail(order(x[,1]), 50)
+sm2 <- tail(order(x[,2]), 50)
+intersect(sm1, sm2)
+Senate_wide$icpsr[33] #29142
+Senate_wide$icpsr[85] #41706
+filter(members, icpsr == 29141) %>%
+  select(bioname)  # Rick Santorum
+filter(members, icpsr == 41706) %>%
+  select(bioname) # Tina Smith
+# not sure if I chose the indices correctly
+```
+Rick Santorum is from the Republican party while Tina Smith is a member of the Democratic–Farmer–Labor Party and an affiliate of the Democratic party. I am unsure of how the interpret the different dimensions. 
+
+# 4 ggplot 2
+```{r 80th congress}
+library(qss)
+library(ggplot2)
+data(congress, package = "qss")
+
+## subset the data by party
+rep <- filter(congress, party == "Republican")
+dem <- filter(congress, party == "Democrat") 
+## 80th and 112th Congress
+rep80 <- filter(rep, congress == 80)
+dem80 <- filter(dem, congress == 80)
+rep112 <- filter(rep, congress == 112)
+dem112 <- filter(dem, congress == 112)
+
+## scatterplot for 80th
+a <- ggplot(dem80, mapping = aes(x=dwnom1, y=dwnom2)) + geom_point(color="blue") +
+  geom_point(rep80, mapping = aes(x=dwnom1, y=dwnom2), color="red") 
+a2 <- a + scale_x_continuous(limits = c(-1.5,1.5)) + scale_y_continuous(limits = c(-1.5,1.5))
+a2 + xlab("Economic liberalism/conservatism") + ylab("Racial liberalism/conservatism") + ggtitle("80th Congress")
+```
+```{r 112th congress}
+## scatterplot for 112th
+b <- ggplot(dem112, mapping = aes(x=dwnom1, y=dwnom2)) + geom_point(color="blue") +
+  geom_point(rep112, mapping = aes(x=dwnom1, y=dwnom2), color="red")
+b2 <- b + scale_x_continuous(limits = c(-1.5,1.5)) + scale_y_continuous(limits = c(-1.5,1.5))
+b2 + xlab("Economic liberalism/conservatism") + ylab("Racial liberalism/conservatism") + ggtitle("112th Congress")
+```
+```{r median legislator party}
+## party median for each congress
+congress_copy <- congress %>%
+  filter(party != "Other") %>%
+  group_by(congress, party) %>%
+  mutate(congress, median_dwnom1 = median(dwnom1))
+c <- ggplot(congress_copy, aes(x = congress, y = median_dwnom1))
+c2 <- c + geom_line(aes(group = party, color = party)) + 
+  annotate("text", x = 110, y = -0.6, label = "Democratic Party") + 
+  annotate("text", x = 110, y = 0.85, label = "Republican Party") +
+  scale_color_manual(values = c("blue", "red"))
+c3 <- c2 + scale_x_continuous(limits = c(80, 115)) +  scale_y_continuous(limits = c(-1.0, 1.0))
+c3 + xlab("Congress") + ylab("DW-NOMINATE score (1st dimension)")
+```
+
+
+```{r 3.6.2}
+## load gini data
+data(USGini, package = "qss")
+
+## Unsure how to do this section 
+
+## time-series plot for partisan difference
+d <- ggplot(USGini, aes(x = year, y = gini))
+d2 <- d + geom_point() +
+  scale_y_continuous(limits = c(0.35, 0.45)) + xlab("Year") +
+  ylab("Gini Coefficient") + ggtitle ("Income Inequality")
+d2
+
+```
+
+```{r 3.6.3 Quantile-Quantile plot}
+## Democrats
+e <- ggplot(dem112, aes(x=dwnom2)) + geom_histogram(bins = 10)
+e + xlab("Racial liberalism/conservatism dimension") + ylab("Density") + 
+  ggtitle("Democrats")
+## Republican
+f <- ggplot(rep112, mapping = aes(x=dwnom2)) + geom_histogram(bins = 10) 
+f +  xlab("Racial liberalism/conservatism dimension") + ylab("Density") + 
+  ggtitle("Republicans")
+## adding limits to the histogram drops variables?? missing data in the middle
+## recode 
+rand_rep112 <- rep112[sample(nrow(rep112), 200), ]
+## qq plot 
+g <- ggplot(mapping = aes(x = sort(dem112$dwnom2), y = sort(rand_rep112$dwnom2)))
+g2 <- g + geom_point() + geom_abline(aes(slope = 1, intercept = 0)) +
+  scale_x_continuous(limits = c(-1.5, 1.5)) + scale_y_continuous(limits = c(-1.5, 1.5)) 
+g2 + xlab("Democrats") + ylab("Republicans") + ggtitle("Racial liberalism/conservatism dimension")
+```
+
+# 5 Apartment Prices
+```{r}
+ROOT <- "https://drive.google.com/u/0/uc?"
+ID <- "id=1GxmKCBzWh6xKTYykX8kw4QVkmGD_z_vC&export=download" 
+apts <- readRDS(gzcon(url(paste0(ROOT, ID))))
+
+apts <- mutate(apts, toilets = as.factor(toilets), sotrage = as.factor(storage))
+ggplot(apts) +
+  geom_point(aes(x= area, y = totalprice/100000,
+                 col = rooms, shape = toilets, size = storage)) +
+  xlab ("Area in sq. meters") + ylab("Total Price") + ggtitle("Relationship Between Area and Total Price")
+```
+By visualizing the data, there seems to be a very consistent relationship between variability in price and the overall size of the house. There doesn't seem to be much of a relationship between the way the space in the house was utilized or the other features. The positive relationship that is present is more about the amount of space rather than how the space was divided up. 
